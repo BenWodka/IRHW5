@@ -1,0 +1,141 @@
+import resource
+import sys
+import spacy
+import os
+import time
+from fixedLengthFile import fixedLengthFile, mapFile, dictFile, postFile
+from hashtable import HashTable, Posting
+from tokenizer import processFile, removeFileExtension
+
+MAX_LENGTH = 45
+
+#Main, processes files from inputDirectory to outputDirectory
+def main(inputDirectory, outputDirectory):
+
+   #statistics about the collection
+    numPostings = 0
+    numTokens = 0
+
+    #nlp = spacy.load("en_core_web_sm")
+    nlp = spacy.blank("en")
+    nlp.max_length = 2000000 #increase memory allocation, necessary for VS Code and maybe Turing
+
+    #if outputDirectory of given name doesn't exist, make it
+    if not os.path.exists(outputDirectory):
+        os.makedirs(outputDirectory)
+
+    globalHT = HashTable(200000)
+    docID = 0
+
+    MapFile = mapFile(os.path.join(outputDirectory, "map.txt"))
+    MapFile.openForWrite()
+
+    #Process files in inputDirectory
+    for filename in os.listdir(inputDirectory):
+        fullPath = os.path.join(inputDirectory, filename)
+        MapFile.writeRecord(docID, filename)
+
+        if os.path.isfile(fullPath):
+            tokens = processFile(fullPath, nlp)
+            numTokensInDocument = len(tokens)
+            numTermsInDocument = 0
+  
+            #initialize document hash table
+            docht = HashTable(numTokensInDocument)
+
+            for token in tokens:
+                    if len(token) < MAX_LENGTH:
+                        numTokensInDocument += 1
+
+                        data = docht.getPostings(token)
+                        if not data:
+                            numTermsInDocument += 1
+                            # Insert and update numDocs
+                            docht.insert(token, Posting(docID=docID, freq=1))
+                        else:
+                            index = docht.__find__(token)
+                            for i, posting in enumerate(docht.hashtable[index].postings):
+                                if posting.docID == docID:
+                                    updatedFreq = posting.freq + 1
+                                    docht.hashtable[index].postings[i] = Posting(docID=posting.docID, freq=updatedFreq)
+                                    break
+                    else:
+                        pass
+            for idx in docht:
+                term = docht.hashtable[idx].key
+                if term != '':
+                    # Get the term frequency for this term in the document
+                    postings = docht.hashtable[idx].postings
+                    if postings:
+                        freq = postings[0].freq
+                        # Create a posting for globalHT
+                        posting = Posting(docID=docID, freq=freq)
+                        globalHT.insert(term, posting)
+
+            print(f"Filename: {filename}")
+            print(f"Unique terms in document: {numTermsInDocument}")
+            print(f"Total tokens in document: {numTokensInDocument}")
+            numPostings += numTermsInDocument
+            numTokens += numTokensInDocument 
+            docID +=1
+
+    # After processing all documents
+    MapFile.closeAfterWriting()
+    writeIndexFiles(globalHT, outputDirectory)
+
+    print(f"Total unique terms in the collection: {globalHT.used}")
+    print(f"Total number of postings in the document collection: {numPostings}")
+    print(f"Total number of tokens in the document collection: {numTokens}")
+
+def writeIndexFiles(globalHT, outputDirectory):
+    DictFile = dictFile(os.path.join(outputDirectory, "dict.txt"))
+    PostFile = postFile(os.path.join(outputDirectory, "post.txt"))
+
+    DictFile.openForWrite()
+    PostFile.openForWrite()
+
+    start = 0  # Start position in postings file
+
+    for idx in range(globalHT.size):
+        pair = globalHT.hashtable[idx]
+        if pair.key != '':
+            term = pair.key
+            postings = pair.postings
+            numDocs = len(postings)  # Number of documents the term appears in
+
+            # Write term, numDocs, start to dict file
+            DictFile.writeRecord(term, numDocs, start)
+
+            # For each posting, write docID and freq
+            for posting in postings:
+                PostFile.writeRecord(posting.docID, posting.freq)
+
+            start += numDocs
+        else:
+            # Empty slot
+            DictFile.writeRecord('empty', -1, -1)
+
+    DictFile.closeAfterWriting()
+    PostFile.closeAfterWriting()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3: #only 2 arguments allowed
+        print("Program needs input directory and output directory")
+        sys.exit(1)
+
+    startRealTime = time.time()  # Real time
+    startUserTime = resource.getrusage(resource.RUSAGE_SELF).ru_utime  # User time
+
+    # Call main with given arguments
+    main(sys.argv[1], sys.argv[2])
+
+    # End time measurement
+    endRealTime = time.time()
+    endUserTime = resource.getrusage(resource.RUSAGE_SELF).ru_utime
+
+    elapsedRealTime = endRealTime - startRealTime
+    elapsedUserTime = endUserTime - startUserTime
+
+    print(f"Real time: {elapsedRealTime:.2f} seconds")
+    print(f"User time (CPU): {elapsedUserTime:.2f} seconds")
